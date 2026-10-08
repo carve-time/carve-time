@@ -1,7 +1,7 @@
 {
   "name": "Carve Time",
   "short_name": "Carve Time",
-  "description": "Plan your homework time on a grid, then work through it with a calm visual timer.",
+  "description": "Plan your time on a grid, then work through it with a calm visual timer.",
   "id": "carve-time-app",
   "start_url": "./",
   "scope": "./",
