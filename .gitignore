@@ -1,1 +1,5 @@
 .claude/
+# Copies made by cloud-sync apps (e.g. Proton Drive) when two saves collide
+*Name clash*
+*onflicted copy*
+desktop.ini
