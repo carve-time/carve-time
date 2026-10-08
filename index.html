@@ -163,8 +163,13 @@ button.pill svg{width:14px;height:14px}
 .field.shake{animation:shake .3s}
 @keyframes shake{25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
 .sugs{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-.sug{height:34px;padding:0 12px 0 8px;border-radius:999px;background:var(--surface2);font-weight:600;font-size:14px;display:flex;align-items:center;gap:7px}
+.sug{height:34px;border-radius:999px;background:var(--surface2);font-weight:600;font-size:14px;display:flex;align-items:center}
+.sugpick{height:100%;display:flex;align-items:center;gap:7px;padding:0 2px 0 8px;font-weight:600}
 .sug i{width:14px;height:14px;border-radius:4px;background:var(--c)}
+.sugx{width:32px;height:100%;display:grid;place-items:center;color:var(--faint);border-radius:0 999px 999px 0}
+.sugx svg{width:12px;height:12px}
+.sugx:active{color:var(--text)}
+.toast .tact{margin-left:14px;font-weight:800;text-decoration:underline;text-underline-offset:3px;padding:2px}
 .swatches{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px}
 .swatch{aspect-ratio:1;border-radius:12px;background:var(--c)}
 .swatch.on{box-shadow:0 0 0 3px var(--surface),0 0 0 5px var(--text)}
@@ -441,10 +446,11 @@ button.pill svg{width:14px;height:14px}
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 let updateReady = false; // a newer version is waiting until no timer runs
 const CELL_MIN = 15, CELL_MS = CELL_MIN * 60000, COLS = 4, U = 100;
 const BREAK_MS = 60000; // autorun break between sections
+const TOPIC_DAYS = 60; // remembered topics unused this long are forgotten
 // Section colours, handed out in this fixed order (never cycled), so neighbours stay easy to tell apart.
 const PALETTE = ['#FF6B5E','#3BA4F5','#F5B52E','#2EC27E','#9B6CF6','#F2649C','#22B8C8','#FF8A3D','#6378F2','#A3D13C','#D45BD8','#B5838D'];
 const reduced = matchMedia('(prefers-reduced-motion: reduce)');
@@ -502,7 +508,8 @@ en:{
   sounds:'Sound', musicRow:'Background music', uiSounds:'Interface sounds', chimes:'Warning and end chimes', vibrate:'Vibrate',
   warnAt:'Warn me before time is up', minBefore:'{n} min', testSound:'Test the chime',
   screen:'Screen', wake:'Keep the screen on while the timer runs', wakeNo:'Not supported in this browser.',
-  memory:'Memory', remember:'Remember topics and colours', rememberSub:'Suggests topics you used before; each keeps its colour.',
+  memory:'Memory', remember:'Remember topics and colours', rememberSub:'Suggests topics you have worked on; each keeps its colour. Unused for 60 days? Then it is forgotten.',
+  forgetTopic:'Forget {name}', forgot:'Forgot "{name}"', undo:'Undo',
   keepHistory:'Keep a history of time spent', forget:'Forget topics', forgetQ:'Forget all remembered topics?',
   clearHistory:'Clear history', clearHistoryQ:'Delete your whole history?',
   data:'Your data', dataSub:'Everything is stored on this phone only. Make a back-up now and then.',
@@ -548,7 +555,8 @@ nl:{
   sounds:'Geluid', musicRow:'Achtergrondmuziek', uiSounds:'Interfacegeluiden', chimes:'Waarschuwings- en eindsignaal', vibrate:'Trillen',
   warnAt:'Waarschuw me voordat de tijd om is', minBefore:'{n} min', testSound:'Signaal testen',
   screen:'Scherm', wake:'Scherm aan houden tijdens de timer', wakeNo:'Niet ondersteund in deze browser.',
-  memory:'Geheugen', remember:'Onderwerpen en kleuren onthouden', rememberSub:'Stelt eerdere onderwerpen voor; elk houdt zijn kleur.',
+  memory:'Geheugen', remember:'Onderwerpen en kleuren onthouden', rememberSub:'Stelt onderwerpen voor waar je aan gewerkt hebt; elk houdt zijn kleur. 60 dagen niet gebruikt? Dan wordt het vergeten.',
+  forgetTopic:'{name} vergeten', forgot:'"{name}" vergeten', undo:'Ongedaan maken',
   keepHistory:'Geschiedenis van bestede tijd bijhouden', forget:'Onderwerpen vergeten', forgetQ:'Alle onthouden onderwerpen vergeten?',
   clearHistory:'Geschiedenis wissen', clearHistoryQ:'Je hele geschiedenis verwijderen?',
   data:'Je gegevens', dataSub:'Alles staat alleen op deze telefoon. Maak af en toe een back-up.',
@@ -614,7 +622,11 @@ function onColor(hex){
   return (Lum + .05) / .06 > 1.05 / (Lum + .05) ? '#17171A' : '#FFFFFF';
 }
 let toastT;
-function toast(msg, ms = 2600){ const el = $('toast'); el.textContent = msg; el.hidden = false; clearTimeout(toastT); toastT = setTimeout(() => el.hidden = true, ms); }
+function toast(msg, ms = 2600, action){
+  const el = $('toast'); el.textContent = msg; el.hidden = false;
+  if (action) { const b = document.createElement('button'); b.className = 'tact'; b.textContent = action.label; b.onclick = () => { el.hidden = true; action.fn(); }; el.append(b); }
+  clearTimeout(toastT); toastT = setTimeout(() => el.hidden = true, ms);
+}
 function vibrate(p){ if (S.settings.vibrate && navigator.vibrate) try { navigator.vibrate(p); } catch (e) {} }
 
 /* ---------------- plan model ---------------- */
@@ -637,9 +649,17 @@ function newSection(name, color){
   return {id:'s' + Date.now().toString(36) + Math.random().toString(36).slice(2, 5), name, color:color || nextColor(name),
     cells:[], extraMs:0, usedMs:0, runSince:null, warned:false, done:false};
 }
+// Called when a section's timer starts: only topics you actually work on are remembered,
+// so typos fixed during planning never end up in the suggestions.
 function rememberTopic(sec){
   if (!S.settings.remember || !sec.name) return;
   S.topics[topicKey(sec.name)] = {name:sec.name, color:sec.color, last:dayKey()};
+}
+// Topics not worked on for 60 days are forgotten, so old one-offs fade out by themselves. History is kept.
+function pruneTopics(){
+  const cutoff = dayKey(new Date(Date.now() - TOPIC_DAYS * 864e5)); let n = 0;
+  for (const k in S.topics) if ((S.topics[k].last || '') < cutoff) { delete S.topics[k]; n++; }
+  if (n) save();
 }
 function logTime(sec, ms){
   if (!S.settings.keepHistory || ms < 1000) return;
@@ -871,7 +891,7 @@ $('pTools').onclick = e => {
 $('pStats').onclick = e => { if (e.target.closest('#pHours')) { homeMin = P().minutes; show('home'); } };
 function leavePlan(){
   const plan = P(); plan.sections = plan.sections.filter(s => s.cells.length);
-  plan.sections.forEach(rememberTopic); activeId = null; tool = 'paint'; save();
+  activeId = null; tool = 'paint'; save();
 }
 $('pBack').onclick = () => {
   if (P().confirmed) { leavePlan(); show('board'); }
@@ -899,7 +919,8 @@ function renderNameSheet(){
   const today = new Set(P().sections.filter(s => s.id !== NS.secId).map(s => topicKey(s.name)));
   const sugs = S.settings.remember ? Object.values(S.topics).filter(x => !today.has(topicKey(x.name)) && topicKey(x.name) !== q && topicKey(x.name).includes(q))
     .sort((a, b) => (b.last || '').localeCompare(a.last || '')).slice(0, 8) : [];
-  $('nSugs').innerHTML = sugs.map(x => `<button class="sug" style="--c:${x.color}" data-name="${esc(x.name)}"><i></i>${esc(x.name)}</button>`).join('');
+  $('nSugs').innerHTML = sugs.map(x => `<span class="sug" style="--c:${x.color}"><button class="sugpick" data-name="${esc(x.name)}"><i></i>${esc(x.name)}</button>` +
+    `<button class="sugx" data-forget="${esc(topicKey(x.name))}" aria-label="${esc(t('forgetTopic', {name:x.name}))}">${ic('close')}</button></span>`).join('');
 }
 $('nInput').addEventListener('input', () => {
   const tp = S.settings.remember && S.topics[topicKey($('nInput').value)];
@@ -908,6 +929,13 @@ $('nInput').addEventListener('input', () => {
 });
 $('nInput').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('nSave').click(); } });
 $('nSugs').onclick = e => {
+  const x = e.target.closest('[data-forget]');
+  if (x) {
+    const k = x.dataset.forget, old = S.topics[k]; if (!old) return;
+    delete S.topics[k]; save(); SFX.erase(); renderNameSheet();
+    toast(t('forgot', {name:old.name}), 4500, {label:t('undo'), fn:() => { S.topics[k] = old; save(); if (NS) renderNameSheet(); }});
+    return;
+  }
   const b = e.target.closest('[data-name]'); if (!b) return;
   $('nInput').value = b.dataset.name; const tp = S.topics[topicKey(b.dataset.name)];
   if (tp && !usedColors(NS.secId).has(tp.color)) NS.color = tp.color;
@@ -920,7 +948,7 @@ $('nSave').onclick = () => {
   let sec = NS.secId && secById(NS.secId);
   if (!sec) { sec = newSection(name, NS.color); P().sections.push(sec); }
   sec.name = name; sec.color = NS.color;
-  activeId = sec.id; tool = 'paint'; rememberTopic(sec);
+  activeId = sec.id; tool = 'paint';
   closeOv('ovName'); NS = null; save(); SFX.pop(); refresh();
 };
 function removeSection(sec){
@@ -1071,7 +1099,7 @@ function startSec(sec, at = Date.now(), how = 'start'){
   if (S.plan.brk) S.plan.brk = null;
   if (remaining(sec) <= 0) { save(); return; }
   sec.done = false; sec.runSince = at; sec.warned = remaining(sec, at) <= warnMs();
-  save(); Alerts.schedule(sec);
+  rememberTopic(sec); save(); Alerts.schedule(sec);
   if (how === 'start') SFX.start(); else if (how === 'auto') SFX.autoNext();
   keepAwake(true); Music.sync(); refresh();
 }
@@ -1683,6 +1711,7 @@ new ResizeObserver(() => { clearTimeout(resizeT); resizeT = setTimeout(() => { i
 document.querySelectorAll('[data-ic]').forEach(el => el.innerHTML = ic(el.dataset.ic));
 $('logo').innerHTML = LOGO; $('logo2').innerHTML = LOGO;
 if (S.plan) S.plan.sections.forEach(s => { if (!s.name) s.name = t('untitled'); });
+pruneTopics();
 applyI18n();
 route();
 if (runningSection()) { keepAwake(true); Music.sync(); }
